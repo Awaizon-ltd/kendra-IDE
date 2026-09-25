@@ -95,7 +95,7 @@ export default function IdePage() {
           <Button variant="primary" size="sm" disabled={!target} onClick={() => setPublishing(true)} title={target ? 'Publish a shareable dApp UI' : 'Load a contract first'}>
             Publish UI
           </Button>
-          <WalletButton chain={target?.chain} rpcUrl={target?.rpcUrl} />
+          <WalletButton chain={target?.chain} />
         </div>
       </header>
 

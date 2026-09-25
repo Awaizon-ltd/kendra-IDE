@@ -51,7 +51,7 @@ export default function PublishedDapp() {
   const addressLink = explorerUrl(chain, 'address', target.address);
 
   return (
-    <Shell right={<WalletButton chain={chain} rpcUrl={data.rpc} />}>
+    <Shell right={<WalletButton chain={chain} />}>
       <div className="max-w-5xl mx-auto px-5 md:px-8 py-10 md:py-14">
         <header className="mb-10">
           <span className="inline-flex items-center gap-2 font-mono text-[10px] tracking-widest uppercase text-accent border border-accent/30 px-2 py-1 mb-4">

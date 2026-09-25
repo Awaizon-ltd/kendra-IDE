@@ -12,18 +12,19 @@ import {
   type Log,
   type PublicClient,
   type TransactionReceipt,
+  type WalletClient,
 } from 'viem';
-import { ensureChain, walletClientFor, type Eip1193Provider } from './wallet';
+import { privateRpc } from './chains';
 
 const clients = new Map<string, PublicClient>();
 
-export function publicClient(chain: Chain, rpcUrl?: string): PublicClient {
-  const key = `${chain.id}:${rpcUrl ?? ''}`;
+function clientFor(chain: Chain, url: string | undefined): PublicClient {
+  const key = `${chain.id}:${url ?? 'public'}`;
   let c = clients.get(key);
   if (!c) {
     c = createPublicClient({
       chain,
-      transport: http(rpcUrl || undefined, { timeout: 20_000 }),
+      transport: http(url, { timeout: 20_000 }),
       // Reads fired together (State tab, published page) collapse into one Multicall3
       // request — public RPCs rate-limit bursts of parallel eth_calls.
       batch: chain.contracts?.multicall3 ? { multicall: { wait: 20 } } : undefined,
@@ -31,6 +32,19 @@ export function publicClient(chain: Chain, rpcUrl?: string): PublicClient {
     clients.set(key, c);
   }
   return c;
+}
+
+/** Reads, simulations, receipts: a user-set RPC, else the configured private RPC, else the public one. */
+export function publicClient(chain: Chain, rpcUrl?: string): PublicClient {
+  return clientFor(chain, rpcUrl || privateRpc(chain.id));
+}
+
+/**
+ * Event logs skip the private RPC: Alchemy's free tier caps eth_getLogs at a 10-block range,
+ * which breaks history and live watching. Public RPCs allow wider ranges.
+ */
+function logsClient(chain: Chain, rpcUrl?: string): PublicClient {
+  return clientFor(chain, rpcUrl || undefined);
 }
 
 export interface Target {
@@ -70,19 +84,19 @@ export async function sendFn(
   t: Target,
   fn: AbiFunction,
   args: unknown[],
-  wallet: { provider: Eip1193Provider; address: `0x${string}`; chainId: number | null },
+  wallet: WalletClient,
   value?: bigint,
 ): Promise<Hash> {
-  if (wallet.chainId !== t.chain.id) await ensureChain(wallet.provider, t.chain, t.rpcUrl);
-  const wc = walletClientFor(wallet.provider, t.chain, wallet.address);
-  return wc.writeContract({
+  const account = wallet.account;
+  if (!account) throw new Error('Wallet has no account');
+  return wallet.writeContract({
     address: t.address,
     abi: callAbi(t, fn),
     functionName: fn.name,
     args,
     value,
     chain: t.chain,
-    account: wallet.address,
+    account,
   } as never);
 }
 
@@ -94,7 +108,7 @@ export async function waitForReceipt(t: Target, hash: Hash): Promise<{ receipt: 
 
 /** Recent logs for one event, newest first. Walks back in chunks to respect RPC range limits. */
 export async function recentLogs(t: Target, event: AbiEvent, blocks = 5_000n, chunk = 1_000n): Promise<Log[]> {
-  const client = publicClient(t.chain, t.rpcUrl);
+  const client = logsClient(t.chain, t.rpcUrl);
   const latest = await client.getBlockNumber();
   const floor = latest > blocks ? latest - blocks : 0n;
   const out: Log[] = [];
@@ -107,7 +121,7 @@ export async function recentLogs(t: Target, event: AbiEvent, blocks = 5_000n, ch
 }
 
 export function watchEvent(t: Target, event: AbiEvent, onLogs: (logs: Log[]) => void, onError: (e: Error) => void) {
-  return publicClient(t.chain, t.rpcUrl).watchContractEvent({
+  return logsClient(t.chain, t.rpcUrl).watchContractEvent({
     address: t.address,
     abi: [event],
     eventName: event.name,

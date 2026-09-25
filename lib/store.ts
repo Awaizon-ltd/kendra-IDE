@@ -5,6 +5,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { isAddress, type Abi } from 'viem';
 import { groupAbi, parseContractInput, type GroupedAbi } from './abi';
+import { DEFAULT_CHAIN_ID, getChain } from './chains';
 
 export interface Workspace {
   name: string;
@@ -50,7 +51,7 @@ interface KendraState {
   forget(address: string, chainId: number): void;
 }
 
-const EMPTY: Workspace = { name: '', address: '', chainId: 8453, rpcUrl: '', abiText: '' };
+const EMPTY: Workspace = { name: '', address: '', chainId: DEFAULT_CHAIN_ID, rpcUrl: '', abiText: '' };
 
 function parse(text: string) {
   if (!text.trim()) return { abi: null, grouped: null, abiError: null };
@@ -87,6 +88,8 @@ export const useKendra = create<KendraState>()(
       },
 
       load(ws) {
+        // Saved workspaces may point at a chain Kendra no longer lists
+        if (!getChain(ws.chainId)) ws = { ...ws, chainId: DEFAULT_CHAIN_ID };
         const parsed = parse(ws.abiText);
         set({ ws, ...parsed, selectedId: parsed.grouped?.functions[0]?.id ?? null, tab: 'playground' });
       },
@@ -129,8 +132,8 @@ export const useKendra = create<KendraState>()(
 /** Ready-made example so first-time visitors can try Kendra without an ABI of their own. */
 export const EXAMPLE: Workspace = {
   name: 'USDC',
-  address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-  chainId: 8453,
+  address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+  chainId: 42161,
   rpcUrl: '',
   abiText: `function name() view returns (string)
 function symbol() view returns (string)

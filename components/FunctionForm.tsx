@@ -5,7 +5,10 @@ import { formatUnits, parseEther, type AbiParameter } from 'viem';
 import { namedOutputs, parseArgs, placeholderFor, stringify, type ContractFn, type NamedOutput } from '@/lib/abi';
 import { explainError, readFn, sendFn, simulateFn, waitForReceipt, type Target } from '@/lib/contract';
 import { explorerUrl } from '@/lib/chains';
-import { useWallet } from '@/lib/wallet';
+import { useAccount, useSwitchChain } from 'wagmi';
+import { getWalletClient } from 'wagmi/actions';
+import { useConnectModal } from '@rainbow-me/rainbowkit';
+import { wagmiConfig } from '@/lib/wagmi';
 import type { ConsoleEntry } from '@/lib/store';
 import { Button, CopyButton, KindBadge } from './ui/primitives';
 
@@ -36,7 +39,9 @@ export default function FunctionForm({ fn, target, variant = 'ide', logger, auto
   const [errors, setErrors] = useState<(string | null)[]>([]);
   const [busy, setBusy] = useState<null | 'read' | 'simulate' | 'send'>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
-  const wallet = useWallet();
+  const { address, chainId, isConnected } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const { openConnectModal } = useConnectModal();
 
   // Reset when switching functions
   useEffect(() => {
@@ -81,13 +86,13 @@ export default function FunctionForm({ fn, target, variant = 'ide', logger, auto
 
   async function doSimulate(quiet = false) {
     if (!target) return null;
-    if (!wallet.address) { setOutcome({ kind: 'error', title: 'Connect a wallet to simulate as your account' }); return null; }
+    if (!address) { openConnectModal?.(); setOutcome({ kind: 'error', title: 'Connect a wallet to simulate as your account' }); return null; }
     const args = parsed();
     const val = parsedValue();
     if (!args || val === null) return null;
     if (!quiet) setBusy('simulate');
     try {
-      const sim = await simulateFn(target, fn.item, args, wallet.address, val);
+      const sim = await simulateFn(target, fn.item, args, address, val);
       const outputs = namedOutputs(fn.item, sim.result);
       if (!quiet) {
         setOutcome({ kind: 'simulate', outputs, gas: sim.gas });
@@ -105,14 +110,17 @@ export default function FunctionForm({ fn, target, variant = 'ide', logger, auto
   }
 
   async function doSend() {
-    if (!target || !wallet.active || !wallet.address) { setOutcome({ kind: 'error', title: 'Connect a wallet to send transactions' }); return; }
+    if (!target) return;
+    if (!isConnected || !address) { openConnectModal?.(); setOutcome({ kind: 'error', title: 'Connect a wallet to send transactions' }); return; }
     setBusy('send');
     // Simulate first so reverts surface with a reason instead of a failed tx
     const ok = await doSimulate(true);
     if (!ok) { setBusy(null); return; }
     let logId: string | undefined;
     try {
-      const hash = await sendFn(target, fn.item, ok.args, { provider: wallet.active.provider, address: wallet.address, chainId: wallet.chainId }, ok.val);
+      if (chainId !== target.chain.id) await switchChainAsync({ chainId: target.chain.id });
+      const walletClient = await getWalletClient(wagmiConfig, { chainId: target.chain.id });
+      const hash = await sendFn(target, fn.item, ok.args, walletClient, ok.val);
       setOutcome({ kind: 'tx', hash, status: 'pending' });
       logId = logger?.log({ kind: 'tx', title, hash, status: 'pending' });
       const { receipt, events } = await waitForReceipt(target, hash);
