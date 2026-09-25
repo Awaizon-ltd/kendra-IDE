@@ -1,0 +1,137 @@
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  createPublicClient,
+  http,
+  parseEventLogs,
+  type Abi,
+  type AbiEvent,
+  type AbiFunction,
+  type Chain,
+  type Hash,
+  type Log,
+  type PublicClient,
+  type TransactionReceipt,
+} from 'viem';
+import { ensureChain, walletClientFor, type Eip1193Provider } from './wallet';
+
+const clients = new Map<string, PublicClient>();
+
+export function publicClient(chain: Chain, rpcUrl?: string): PublicClient {
+  const key = `${chain.id}:${rpcUrl ?? ''}`;
+  let c = clients.get(key);
+  if (!c) {
+    c = createPublicClient({
+      chain,
+      transport: http(rpcUrl || undefined, { timeout: 20_000 }),
+      // Reads fired together (State tab, published page) collapse into one Multicall3
+      // request — public RPCs rate-limit bursts of parallel eth_calls.
+      batch: chain.contracts?.multicall3 ? { multicall: { wait: 20 } } : undefined,
+    }) as PublicClient;
+    clients.set(key, c);
+  }
+  return c;
+}
+
+export interface Target {
+  chain: Chain;
+  rpcUrl?: string;
+  address: `0x${string}`;
+  /** Full ABI — passed along so custom errors decode into readable reasons. */
+  abi: Abi;
+}
+
+// Call with just the selected function (+ errors) so overloaded names resolve unambiguously.
+const callAbi = (t: Target, fn: AbiFunction): Abi => [fn, ...t.abi.filter((i) => i.type === 'error')];
+
+export async function readFn(t: Target, fn: AbiFunction, args: unknown[]) {
+  return publicClient(t.chain, t.rpcUrl).readContract({
+    address: t.address,
+    abi: callAbi(t, fn),
+    functionName: fn.name,
+    args,
+  } as never);
+}
+
+export interface SimulationResult {
+  result: unknown;
+  gas?: bigint;
+}
+
+export async function simulateFn(t: Target, fn: AbiFunction, args: unknown[], account: `0x${string}`, value?: bigint): Promise<SimulationResult> {
+  const client = publicClient(t.chain, t.rpcUrl);
+  const params = { address: t.address, abi: callAbi(t, fn), functionName: fn.name, args, account, value } as never;
+  const { result } = await client.simulateContract(params);
+  const gas = await client.estimateContractGas(params).catch(() => undefined);
+  return { result, gas };
+}
+
+export async function sendFn(
+  t: Target,
+  fn: AbiFunction,
+  args: unknown[],
+  wallet: { provider: Eip1193Provider; address: `0x${string}`; chainId: number | null },
+  value?: bigint,
+): Promise<Hash> {
+  if (wallet.chainId !== t.chain.id) await ensureChain(wallet.provider, t.chain, t.rpcUrl);
+  const wc = walletClientFor(wallet.provider, t.chain, wallet.address);
+  return wc.writeContract({
+    address: t.address,
+    abi: callAbi(t, fn),
+    functionName: fn.name,
+    args,
+    value,
+    chain: t.chain,
+    account: wallet.address,
+  } as never);
+}
+
+export async function waitForReceipt(t: Target, hash: Hash): Promise<{ receipt: TransactionReceipt; events: ReturnType<typeof parseEventLogs> }> {
+  const receipt = await publicClient(t.chain, t.rpcUrl).waitForTransactionReceipt({ hash, timeout: 180_000 });
+  const events = parseEventLogs({ abi: t.abi, logs: receipt.logs, strict: false });
+  return { receipt, events };
+}
+
+/** Recent logs for one event, newest first. Walks back in chunks to respect RPC range limits. */
+export async function recentLogs(t: Target, event: AbiEvent, blocks = 5_000n, chunk = 1_000n): Promise<Log[]> {
+  const client = publicClient(t.chain, t.rpcUrl);
+  const latest = await client.getBlockNumber();
+  const floor = latest > blocks ? latest - blocks : 0n;
+  const out: Log[] = [];
+  for (let to = latest; to > floor && out.length < 200; to -= chunk) {
+    const from = to - chunk + 1n > floor ? to - chunk + 1n : floor;
+    const logs = await client.getLogs({ address: t.address, event, fromBlock: from, toBlock: to });
+    out.push(...logs.reverse());
+  }
+  return out;
+}
+
+export function watchEvent(t: Target, event: AbiEvent, onLogs: (logs: Log[]) => void, onError: (e: Error) => void) {
+  return publicClient(t.chain, t.rpcUrl).watchContractEvent({
+    address: t.address,
+    abi: [event],
+    eventName: event.name,
+    onLogs,
+    onError,
+    pollingInterval: 4_000,
+  } as never);
+}
+
+/** Readable reason for any viem error: custom error name + args, revert string, or short message. */
+export function explainError(err: unknown): { title: string; detail?: string; rejected: boolean } {
+  const e = err as BaseError;
+  const rejected = /reject|denied|cancel/i.test(e?.shortMessage ?? e?.message ?? '') || (err as { code?: number })?.code === 4001;
+  if (rejected) return { title: 'Rejected in wallet', rejected: true };
+  if (e instanceof BaseError) {
+    const revert = e.walk((x) => x instanceof ContractFunctionRevertedError) as ContractFunctionRevertedError | null;
+    if (revert) {
+      if (revert.data?.errorName) {
+        const args = revert.data.args?.map((a) => (typeof a === 'bigint' ? a.toString() : JSON.stringify(a))).join(', ');
+        return { title: `Reverted: ${revert.data.errorName}(${args ?? ''})`, detail: e.shortMessage, rejected: false };
+      }
+      if (revert.reason) return { title: `Reverted: ${revert.reason}`, rejected: false };
+    }
+    return { title: e.shortMessage || e.message.split('\n')[0], detail: e.details, rejected: false };
+  }
+  return { title: (err as Error)?.message ?? String(err), rejected: false };
+}
