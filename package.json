@@ -1,0 +1,38 @@
+{
+  "name": "kendra",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Kendra — smart contract playground and hook generator by Awarizon",
+  "scripts": {
+    "dev": "next dev -p 3600",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@codemirror/lang-javascript": "^6.2.2",
+    "@codemirror/lang-json": "^6.0.1",
+    "@rainbow-me/rainbowkit": "^2.2.11",
+    "@tanstack/react-query": "^5.103.2",
+    "@uiw/codemirror-theme-tokyo-night": "^4.23.0",
+    "@uiw/react-codemirror": "^4.23.0",
+    "lz-string": "^1.5.0",
+    "next": "14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "viem": "^2.21.0",
+    "wagmi": "^2.19.5",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5",
+    "vitest": "^2.1.0"
+  }
+}

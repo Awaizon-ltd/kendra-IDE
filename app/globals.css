@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+html, body { background: #000; color: #fff; }
+body { font-family: var(--font-body), system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+
+::selection { background: #C8F13F; color: #000; }
+:focus-visible { outline: 1px solid #C8F13F; outline-offset: 2px; }
+
+/* Thin scrollbars inside panes */
+* { scrollbar-width: thin; scrollbar-color: #2a2a2a transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: #8CA92C; }
+
+@layer components {
+  .field {
+    @apply w-full bg-panel-2 border border-line text-white font-mono text-[13px] px-3 py-2 outline-none transition-colors placeholder:text-dim/50 focus:border-accent/70;
+  }
+  .field-error { @apply border-bad/70 focus:border-bad; }
+  .label { @apply block font-mono text-[10px] tracking-[0.18em] uppercase text-dim mb-1.5; }
+  .pane-title { @apply font-mono text-[10px] tracking-[0.2em] uppercase text-dim; }
+}
+
+/* CodeMirror: blend into the panel */
+.cm-editor { background: transparent !important; font-size: 12.5px; }
+.cm-editor.cm-focused { outline: none !important; }
+.cm-gutters { background: transparent !important; border-right: 1px solid #1A1A1A !important; }
+.cm-scroller { font-family: var(--font-mono), monospace !important; }
