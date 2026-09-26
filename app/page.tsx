@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useKendra, useRehydrate, EXAMPLE } from '@/lib/store';
 import { useTarget } from '@/lib/useTarget';
+import { useTokenInfo } from '@/lib/useToken';
+import { getAddress, isAddress } from 'viem';
 import { publicClient } from '@/lib/contract';
 import { decodeShare } from '@/lib/share';
 import { explorerUrl } from '@/lib/chains';
@@ -22,8 +24,10 @@ type MobilePane = 'setup' | 'work' | 'console';
 export default function IdePage() {
   useRehydrate();
   const store = useKendra();
-  const { ws, grouped, selectedId, tab, setTab, log, patchLog, remember, load } = store;
+  const { ws, grouped, selectedId, tab, setTab, log, patchLog, remember, load, simulateAs, setSimulateAs, prefill } = store;
   const target = useTarget();
+  const token = useTokenInfo(target, grouped);
+  const simulateAsValid = isAddress(simulateAs.trim(), { strict: false }) ? getAddress(simulateAs.trim()) : undefined;
   const [publishing, setPublishing] = useState(false);
   const [pane, setPane] = useState<MobilePane>('work');
   const [block, setBlock] = useState<{ n?: bigint; error?: boolean }>({});
@@ -126,12 +130,21 @@ export default function IdePage() {
                       Add a valid contract address to run calls.
                     </p>
                   )}
-                  <FunctionForm key={selected.id} fn={selected} target={target} logger={{ log, patchLog }} />
+                  <SimulateAsBar value={simulateAs} valid={!!simulateAsValid} onChange={setSimulateAs} />
+                  <FunctionForm
+                    key={selected.id}
+                    fn={selected}
+                    target={target}
+                    logger={{ log, patchLog }}
+                    token={token}
+                    simulateAs={simulateAsValid}
+                    prefill={prefill}
+                  />
                 </div>
               ) : (
                 <Welcome onExample={() => load(EXAMPLE)} />
               ))}
-            {tab === 'state' && <StatePanel fns={grouped?.functions ?? []} target={target} />}
+            {tab === 'state' && <StatePanel fns={grouped?.functions ?? []} target={target} token={token} />}
             {tab === 'events' && <EventsPanel events={grouped?.events ?? []} target={target} />}
             {tab === 'code' && <CodePanel name={ws.name} address={ws.address} abi={store.abi} />}
           </div>
@@ -152,6 +165,29 @@ export default function IdePage() {
       </nav>
 
       {publishing && target && <PublishDialog target={target} name={ws.name} onClose={() => setPublishing(false)} />}
+    </div>
+  );
+}
+
+/** Fork mode: run reads and simulations as any address — no wallet needed, nothing is sent. */
+function SimulateAsBar({ value, valid, onChange }: { value: string; valid: boolean; onChange: (v: string) => void }) {
+  const bad = value.trim() !== '' && !valid;
+  return (
+    <div className={`mb-6 flex flex-wrap items-center gap-3 border px-3 py-2 ${value.trim() && valid ? 'border-accent/40 bg-accent/5' : 'border-line'}`}>
+      <span className="font-mono text-[10px] tracking-widest uppercase text-dim shrink-0" title="Reads and simulations use this address as msg.sender. Transactions are always sent from your wallet.">
+        Simulate as
+      </span>
+      <input
+        className={`flex-1 min-w-[180px] bg-transparent font-mono text-[12px] text-white outline-none placeholder:text-dim/60 ${bad ? 'text-bad' : ''}`}
+        placeholder="connected wallet  (paste any address to test as it)"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        spellCheck={false}
+      />
+      {value && (
+        <button onClick={() => onChange('')} className="font-mono text-[10px] tracking-widest uppercase text-dim hover:text-white">Clear</button>
+      )}
+      {bad && <span className="w-full font-mono text-[10px] text-bad">Not a valid address</span>}
     </div>
   );
 }

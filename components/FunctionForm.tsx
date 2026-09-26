@@ -2,14 +2,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { formatUnits, parseEther, type AbiParameter } from 'viem';
-import { namedOutputs, parseArgs, placeholderFor, stringify, type ContractFn, type NamedOutput } from '@/lib/abi';
+import { namedOutputs, parseArg, parseArgs, placeholderFor, stringify, type ContractFn, type NamedOutput } from '@/lib/abi';
+import { formatTokenAmount, isAmountType, type TokenInfo } from '@/lib/useToken';
 import { explainError, readFn, sendFn, simulateFn, waitForReceipt, type Target } from '@/lib/contract';
 import { explorerUrl } from '@/lib/chains';
 import { useAccount, useSwitchChain } from 'wagmi';
 import { getWalletClient } from 'wagmi/actions';
 import { useConnectModal } from '@rainbow-me/rainbowkit';
 import { wagmiConfig } from '@/lib/wagmi';
-import type { ConsoleEntry } from '@/lib/store';
+import type { CallRecord, ConsoleEntry, Prefill } from '@/lib/store';
 import { Button, CopyButton, KindBadge } from './ui/primitives';
 
 type Logger = {
@@ -30,12 +31,19 @@ interface Props {
   logger?: Logger;
   /** Run zero-argument reads as soon as the form mounts. */
   autoRead?: boolean;
+  /** ERC-20 style decimals/symbol — amounts are shown and entered in whole-token units. */
+  token?: TokenInfo | null;
+  /** Fork mode: msg.sender for reads and simulations, instead of the connected wallet. */
+  simulateAs?: `0x${string}`;
+  /** Inputs to load, e.g. when replaying a call from the console. */
+  prefill?: Prefill | null;
 }
 
-export default function FunctionForm({ fn, target, variant = 'ide', logger, autoRead }: Props) {
+export default function FunctionForm({ fn, target, variant = 'ide', logger, autoRead, token, simulateAs, prefill }: Props) {
   const inputs = fn.item.inputs ?? [];
-  const [raws, setRaws] = useState<string[]>(() => inputs.map(() => ''));
-  const [value, setValue] = useState('');
+  const fromPrefill = prefill?.fnId === fn.id ? prefill : null;
+  const [raws, setRaws] = useState<string[]>(() => inputs.map((_, i) => fromPrefill?.raws[i] ?? ''));
+  const [value, setValue] = useState(fromPrefill?.value ?? '');
   const [errors, setErrors] = useState<(string | null)[]>([]);
   const [busy, setBusy] = useState<null | 'read' | 'simulate' | 'send'>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
@@ -43,14 +51,15 @@ export default function FunctionForm({ fn, target, variant = 'ide', logger, auto
   const { switchChainAsync } = useSwitchChain();
   const { openConnectModal } = useConnectModal();
 
-  // Reset when switching functions
+  // Reset when switching functions; load replayed inputs when the console asks for it
   useEffect(() => {
-    setRaws(inputs.map(() => ''));
-    setValue('');
+    const pf = prefill?.fnId === fn.id ? prefill : null;
+    setRaws(inputs.map((_, i) => pf?.raws[i] ?? ''));
+    setValue(pf?.value ?? '');
     setErrors([]);
     setOutcome(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fn.id]);
+  }, [fn.id, prefill?.nonce]);
 
   const parsed = () => {
     const r = parseArgs(inputs, raws);
@@ -64,6 +73,8 @@ export default function FunctionForm({ fn, target, variant = 'ide', logger, auto
   };
 
   const title = `${fn.name}(${raws.map((r) => r || '…').join(', ')})`;
+  const call: CallRecord = { fnId: fn.id, raws, value: fn.kind === 'payable' ? value : undefined };
+  const caller = simulateAs ?? address;
 
   async function doRead() {
     if (!target) return;
@@ -71,14 +82,14 @@ export default function FunctionForm({ fn, target, variant = 'ide', logger, auto
     if (!args) return;
     setBusy('read');
     try {
-      const res = await readFn(target, fn.item, args);
+      const res = await readFn(target, fn.item, args, caller);
       const outputs = namedOutputs(fn.item, res);
       setOutcome({ kind: 'read', outputs });
-      logger?.log({ kind: 'read', title, detail: outputs.map((o) => `${o.name ? o.name + ': ' : ''}${stringify(o.value)}`).join('\n') });
+      logger?.log({ kind: 'read', title: simulateAs ? `${title} as ${short(simulateAs)}` : title, detail: outputs.map((o) => `${o.name ? o.name + ': ' : ''}${stringify(o.value)}`).join('\n'), call });
     } catch (e) {
       const x = explainError(e);
       setOutcome({ kind: 'error', ...x });
-      logger?.log({ kind: 'error', title: `${fn.name}: ${x.title}`, detail: x.detail });
+      logger?.log({ kind: 'error', title: `${fn.name}: ${x.title}`, detail: x.detail, call });
     } finally {
       setBusy(null);
     }
@@ -86,23 +97,25 @@ export default function FunctionForm({ fn, target, variant = 'ide', logger, auto
 
   async function doSimulate(quiet = false) {
     if (!target) return null;
-    if (!address) { openConnectModal?.(); setOutcome({ kind: 'error', title: 'Connect a wallet to simulate as your account' }); return null; }
+    // Standalone simulations can run as any address; the one before sending must use the signer
+    const as = quiet ? address : caller;
+    if (!as) { openConnectModal?.(); setOutcome({ kind: 'error', title: 'Connect a wallet, or set "Simulate as" to test as any address' }); return null; }
     const args = parsed();
     const val = parsedValue();
     if (!args || val === null) return null;
     if (!quiet) setBusy('simulate');
     try {
-      const sim = await simulateFn(target, fn.item, args, address, val);
+      const sim = await simulateFn(target, fn.item, args, as, val);
       const outputs = namedOutputs(fn.item, sim.result);
       if (!quiet) {
         setOutcome({ kind: 'simulate', outputs, gas: sim.gas });
-        logger?.log({ kind: 'simulate', title, detail: `ok${sim.gas ? ` · gas ≈ ${sim.gas}` : ''}` });
+        logger?.log({ kind: 'simulate', title: as !== address ? `${title} as ${short(as)}` : title, detail: `ok${sim.gas ? ` · gas ≈ ${sim.gas}` : ''}`, call });
       }
       return { args, val };
     } catch (e) {
       const x = explainError(e);
       setOutcome({ kind: 'error', ...x });
-      logger?.log({ kind: 'error', title: `simulate ${fn.name}: ${x.title}`, detail: x.detail });
+      logger?.log({ kind: 'error', title: `simulate ${fn.name}: ${x.title}`, detail: x.detail, call });
       return null;
     } finally {
       if (!quiet) setBusy(null);
@@ -122,7 +135,7 @@ export default function FunctionForm({ fn, target, variant = 'ide', logger, auto
       const walletClient = await getWalletClient(wagmiConfig, { chainId: target.chain.id });
       const hash = await sendFn(target, fn.item, ok.args, walletClient, ok.val);
       setOutcome({ kind: 'tx', hash, status: 'pending' });
-      logId = logger?.log({ kind: 'tx', title, hash, status: 'pending' });
+      logId = logger?.log({ kind: 'tx', title, hash, status: 'pending', call });
       const { receipt, events } = await waitForReceipt(target, hash);
       const status = receipt.status === 'success' ? 'success' : 'reverted';
       const evs = events.map((ev) => ({ name: (ev as { eventName?: string }).eventName ?? 'Unknown', args: (ev as { args?: unknown }).args }));
@@ -132,7 +145,7 @@ export default function FunctionForm({ fn, target, variant = 'ide', logger, auto
       const x = explainError(e);
       setOutcome({ kind: 'error', ...x });
       if (logId) logger?.patchLog(logId, { status: 'reverted', detail: x.title });
-      else if (!x.rejected) logger?.log({ kind: 'error', title: `${fn.name}: ${x.title}`, detail: x.detail });
+      else if (!x.rejected) logger?.log({ kind: 'error', title: `${fn.name}: ${x.title}`, detail: x.detail, call });
     } finally {
       setBusy(null);
     }
@@ -177,6 +190,7 @@ export default function FunctionForm({ fn, target, variant = 'ide', logger, auto
               index={i}
               value={raws[i] ?? ''}
               error={errors[i]}
+              token={token}
               onChange={(v) => setRaws((r) => r.map((x, j) => (j === i ? v : x)))}
             />
           ))}
@@ -209,14 +223,14 @@ export default function FunctionForm({ fn, target, variant = 'ide', logger, auto
         )}
       </div>
 
-      {outcome && <OutcomeView outcome={outcome} target={target} dapp={dapp} />}
+      {outcome && <OutcomeView outcome={outcome} target={target} dapp={dapp} token={token} />}
     </form>
   );
 }
 
 // ─── Parameter input ──────────────────────────────────────────────────────────
 
-function ParamField({ param, index, value, error, onChange }: { param: AbiParameter; index: number; value: string; error?: string | null; onChange: (v: string) => void }) {
+function ParamField({ param, index, value, error, token, onChange }: { param: AbiParameter; index: number; value: string; error?: string | null; token?: TokenInfo | null; onChange: (v: string) => void }) {
   const complex = param.type.endsWith(']') || param.type === 'tuple';
   const isInt = /^u?int\d*$/.test(param.type);
   const label = (
@@ -268,17 +282,20 @@ function ParamField({ param, index, value, error, onChange }: { param: AbiParame
             autoComplete="off"
           />
           {isInt && (
-            // Quick unit helpers: append 18 or 6 decimal zeros to the typed amount
+            // Quick unit helpers: turn a whole-token amount into base units
             <div className="absolute right-1 top-1/2 -translate-y-1/2 flex gap-1">
-              {[['×1e18', 'ether'], ['×1e6', '1e6']].map(([lbl, unit]) => (
+              {(token && isAmountType(param.type)
+                ? [[token.symbol ?? `×1e${token.decimals}`, `e${token.decimals}`], ['×1e18', 'ether']]
+                : [['×1e18', 'ether'], ['×1e6', 'e6']]
+              ).map(([lbl, unit]) => (
                 <button
                   key={lbl}
                   type="button"
-                  title={unit === 'ether' ? 'Treat as whole tokens with 18 decimals' : 'Treat as whole tokens with 6 decimals'}
+                  title={unit === 'ether' ? 'Treat as whole units with 18 decimals' : `Treat as whole units with ${unit.slice(1)} decimals`}
                   onClick={() => {
-                    const n = value.trim().replace(/\s*(ether|eth|gwei|wei)$/i, '');
+                    const n = value.trim().replace(/\s*(ether|eth|gwei|wei)$/i, '').replace(/e\d+$/i, '');
                     if (!n) return;
-                    onChange(unit === 'ether' ? `${n} ether` : `${n}e6`);
+                    onChange(unit === 'ether' ? `${n} ether` : `${n}${unit}`);
                   }}
                   className="font-mono text-[9px] px-1.5 py-1 text-dim border border-line hover:text-accent hover:border-accent/40"
                 >
@@ -289,14 +306,29 @@ function ParamField({ param, index, value, error, onChange }: { param: AbiParame
           )}
         </div>
       )}
-      {error && <p className="font-mono text-[11px] text-bad mt-1">{error}</p>}
+      {error ? (
+        <p className="font-mono text-[11px] text-bad mt-1">{error}</p>
+      ) : (
+        <TokenPreview param={param} value={value} token={token} />
+      )}
     </div>
   );
 }
 
+/** "= 12.5 USDC" under amount inputs, so base units are never a guess. */
+function TokenPreview({ param, value, token }: { param: AbiParameter; value: string; token?: TokenInfo | null }) {
+  if (!token || !isAmountType(param.type) || !value.trim()) return null;
+  let v: unknown;
+  try { v = parseArg(param, value); } catch { return null; }
+  if (typeof v !== 'bigint') return null;
+  return <p className="font-mono text-[10px] text-dim mt-1">= {formatTokenAmount(v, token.decimals)} {token.symbol ?? ''}</p>;
+}
+
+const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+
 // ─── Results ──────────────────────────────────────────────────────────────────
 
-function OutcomeView({ outcome, target, dapp }: { outcome: Outcome; target: Target | null; dapp: boolean }) {
+function OutcomeView({ outcome, target, dapp, token }: { outcome: Outcome; target: Target | null; dapp: boolean; token?: TokenInfo | null }) {
   if (outcome.kind === 'error') {
     return (
       <div className="mt-5 border border-bad/30 bg-bad/5 px-4 py-3">
@@ -341,19 +373,20 @@ function OutcomeView({ outcome, target, dapp }: { outcome: Outcome; target: Targ
           {outcome.gas !== undefined && <span className="font-mono text-[10px] text-dim">gas ≈ {outcome.gas.toString()}</span>}
         </div>
       )}
-      {outcome.outputs.map((o, i) => <OutputRow key={i} out={o} />)}
+      {outcome.outputs.map((o, i) => <OutputRow key={i} out={o} token={token} />)}
     </div>
   );
 }
 
-function OutputRow({ out }: { out: NamedOutput }) {
+function OutputRow({ out, token }: { out: NamedOutput; token?: TokenInfo | null }) {
   const text = stringify(out.value);
   const hint = useMemo(() => {
     if (typeof out.value !== 'bigint' || !/^u?int/.test(out.type)) return null;
+    if (token && isAmountType(out.type)) return [`${formatTokenAmount(out.value, token.decimals)} ${token.symbol ?? ''}`.trim()];
     const v = out.value < 0n ? -out.value : out.value;
     if (v < 10n ** 6n) return null;
     return [formatUnits(out.value, 18) + ' (18 dp)', formatUnits(out.value, 6) + ' (6 dp)'];
-  }, [out]);
+  }, [out, token]);
   return (
     <div className="px-4 py-3 border-b border-line last:border-0">
       <div className="flex items-center justify-between gap-3 mb-1">

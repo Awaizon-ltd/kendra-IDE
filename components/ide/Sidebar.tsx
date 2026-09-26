@@ -1,12 +1,13 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isAddress } from 'viem';
 import { json } from '@codemirror/lang-json';
 import { tokyoNight } from '@uiw/codemirror-theme-tokyo-night';
 import { EXAMPLE, useKendra } from '@/lib/store';
 import { getChain } from '@/lib/chains';
+import { fetchVerifiedAbi } from '@/lib/fetchAbi';
 import type { FnKind } from '@/lib/abi';
 import ChainSelect from '../ChainSelect';
 import { Button, KindBadge } from '../ui/primitives';
@@ -37,6 +38,35 @@ export default function Sidebar() {
     return c;
   }, [grouped]);
 
+  // ── Verified ABI lookup (Sourcify → Blockscout → Etherscan), proxies resolved ──
+  const [lookup, setLookup] = useState<{ state: 'idle' | 'loading' | 'ok' | 'none'; msg?: string }>({ state: 'idle' });
+  const fetchAbi = useCallback(async (signal?: AbortSignal) => {
+    const chain = getChain(ws.chainId);
+    const address = ws.address.trim();
+    if (!chain || !isAddress(address, { strict: false })) return;
+    setLookup({ state: 'loading' });
+    const r = await fetchVerifiedAbi(chain, address, ws.rpcUrl.trim() || undefined, signal).catch(() => null);
+    if (signal?.aborted) return;
+    if (!r) {
+      setLookup({ state: 'none', msg: `Not verified on ${chain.name} — paste the ABI below` });
+      return;
+    }
+    setAbiText(JSON.stringify(r.abi, null, 2));
+    if (!useKendra.getState().ws.name && r.name) update({ name: r.name });
+    const proxy = r.implementation ? ` · proxy → ${r.implementation.name ?? r.implementation.address.slice(0, 10) + '…'}` : '';
+    setLookup({ state: 'ok', msg: `Verified on ${r.source}${proxy}` });
+  }, [ws.address, ws.chainId, ws.rpcUrl, setAbiText, update]);
+
+  // Auto-fetch once a valid address is entered and no ABI has been provided yet
+  useEffect(() => {
+    if (ws.abiText.trim() || !isAddress(ws.address.trim(), { strict: false })) return;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => void fetchAbi(ctrl.signal), 500);
+    return () => { clearTimeout(t); ctrl.abort(); };
+  }, [ws.address, ws.chainId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { setLookup({ state: 'idle' }); }, [ws.address, ws.chainId]);
+
   async function onFile(file: File) {
     const text = await file.text();
     setAbiText(text);
@@ -61,15 +91,30 @@ export default function Sidebar() {
               <input className="field" placeholder="MyToken" value={ws.name} onChange={(e) => update({ name: e.target.value })} />
             </div>
             <div>
-              <label className="label">Address</label>
+              <div className="flex items-center justify-between">
+                <label className="label">Address</label>
+                <button
+                  onClick={() => void fetchAbi()}
+                  disabled={addressBad || !ws.address.trim() || lookup.state === 'loading'}
+                  title="Look up the verified ABI (resolves proxies)"
+                  className="font-mono text-[9px] tracking-widest uppercase text-dim hover:text-accent disabled:opacity-40 disabled:hover:text-dim mb-1.5"
+                >
+                  {lookup.state === 'loading' ? 'Fetching…' : 'Fetch ABI'}
+                </button>
+              </div>
               <input
                 className={`field ${addressBad ? 'field-error' : ''}`}
-                placeholder="0x…"
+                placeholder="0x… (verified ABIs load automatically)"
                 value={ws.address}
                 onChange={(e) => update({ address: e.target.value })}
                 spellCheck={false}
               />
               {addressBad && <p className="font-mono text-[11px] text-bad mt-1">Not a valid address</p>}
+              {!addressBad && lookup.msg && (
+                <p className={`font-mono text-[10px] mt-1 ${lookup.state === 'ok' ? 'text-ok' : 'text-dim'}`}>
+                  {lookup.state === 'ok' ? '✓ ' : ''}{lookup.msg}
+                </p>
+              )}
             </div>
             <div>
               <div className="flex items-center justify-between">

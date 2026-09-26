@@ -8,6 +8,7 @@ import { explorerUrl, getChain } from '@/lib/chains';
 import type { Target } from '@/lib/contract';
 import FunctionForm from '@/components/FunctionForm';
 import StatePanel from '@/components/ide/StatePanel';
+import { useTokenInfo } from '@/lib/useToken';
 import WalletButton from '@/components/WalletButton';
 import { CopyButton, KendraMark } from '@/components/ui/primitives';
 
@@ -33,6 +34,7 @@ export default function PublishedDapp() {
     [data, chain],
   );
   const grouped = useMemo(() => (data ? groupAbi(data.abi) : null), [data]);
+  const token = useTokenInfo(target, grouped);
 
   if (error || (data && !chain)) {
     return (
@@ -68,14 +70,14 @@ export default function PublishedDapp() {
 
         <section className="mb-12">
           <h2 className="font-display font-bold text-xl text-white mb-4">Overview</h2>
-          <StatePanel fns={grouped.functions} target={target} compact />
+          <StatePanel fns={grouped.functions} target={target} token={token} compact />
         </section>
 
         {readsWithArgs.length > 0 && (
           <section className="mb-12">
             <h2 className="font-display font-bold text-xl text-white mb-4">Look up</h2>
             <div className="grid md:grid-cols-2 gap-4">
-              {readsWithArgs.map((f) => <FunctionForm key={f.id} fn={f} target={target} variant="dapp" />)}
+              {readsWithArgs.map((f) => <FunctionForm key={f.id} fn={f} target={target} variant="dapp" token={token} />)}
             </div>
           </section>
         )}
@@ -85,7 +87,7 @@ export default function PublishedDapp() {
             <h2 className="font-display font-bold text-xl text-white mb-1">Actions</h2>
             <p className="font-body text-sm text-dim mb-4">These send a transaction from your connected wallet.</p>
             <div className="grid md:grid-cols-2 gap-4">
-              {writes.map((f) => <FunctionForm key={f.id} fn={f} target={target} variant="dapp" />)}
+              {writes.map((f) => <FunctionForm key={f.id} fn={f} target={target} variant="dapp" token={token} />)}
             </div>
           </section>
         )}

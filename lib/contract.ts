@@ -58,12 +58,14 @@ export interface Target {
 // Call with just the selected function (+ errors) so overloaded names resolve unambiguously.
 const callAbi = (t: Target, fn: AbiFunction): Abi => [fn, ...t.abi.filter((i) => i.type === 'error')];
 
-export async function readFn(t: Target, fn: AbiFunction, args: unknown[]) {
+/** `account` sets msg.sender for the call — view functions that depend on the caller need it. */
+export async function readFn(t: Target, fn: AbiFunction, args: unknown[], account?: `0x${string}`) {
   return publicClient(t.chain, t.rpcUrl).readContract({
     address: t.address,
     abi: callAbi(t, fn),
     functionName: fn.name,
     args,
+    account,
   } as never);
 }
 

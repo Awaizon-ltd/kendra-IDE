@@ -5,6 +5,8 @@ module.exports = {
   distDir: process.env.NEXT_DIST_DIR || '.next',
   eslint: { ignoreDuringBuilds: true },
   webpack: (config) => {
+    // Throwaway verification builds skip webpack's disk cache (it's hundreds of MB)
+    if (process.env.NEXT_DIST_DIR) config.cache = false;
     // Optional deps of WalletConnect's logger / storage — not needed in the browser (per RainbowKit's Next.js guide)
     config.externals.push('pino-pretty', 'lokijs', 'encoding');
     // RainbowKit → Base Account → Coinbase CDP SDK imports x402 payment helpers that aren't

@@ -25,6 +25,19 @@ export interface ConsoleEntry {
   detail?: string;
   hash?: string;
   status?: 'pending' | 'success' | 'reverted';
+  /** Inputs that produced this entry — lets the console replay the call. */
+  call?: CallRecord;
+}
+
+export interface CallRecord {
+  fnId: string;
+  raws: string[];
+  value?: string;
+}
+
+/** A call waiting to be loaded into its function form (set by console replay). */
+export interface Prefill extends CallRecord {
+  nonce: number;
 }
 
 export type CenterTab = 'playground' | 'state' | 'events' | 'code';
@@ -38,6 +51,9 @@ interface KendraState {
   tab: CenterTab;
   console: ConsoleEntry[];
   recents: Workspace[];
+  /** Address used as msg.sender for reads and simulations ("fork mode"). Empty → connected wallet. */
+  simulateAs: string;
+  prefill: Prefill | null;
 
   update(patch: Partial<Workspace>): void;
   setAbiText(text: string): void;
@@ -49,6 +65,8 @@ interface KendraState {
   clearConsole(): void;
   remember(): void;
   forget(address: string, chainId: number): void;
+  setSimulateAs(address: string): void;
+  replay(call: CallRecord): void;
 }
 
 const EMPTY: Workspace = { name: '', address: '', chainId: DEFAULT_CHAIN_ID, rpcUrl: '', abiText: '' };
@@ -74,6 +92,8 @@ export const useKendra = create<KendraState>()(
       tab: 'playground',
       console: [],
       recents: [],
+      simulateAs: '',
+      prefill: null,
 
       update: (patch) => set((s) => ({ ws: { ...s.ws, ...patch } })),
 
@@ -113,13 +133,16 @@ export const useKendra = create<KendraState>()(
           recents: [ws, ...s.recents.filter((r) => !(r.address.toLowerCase() === ws.address.toLowerCase() && r.chainId === ws.chainId))].slice(0, 12),
         }));
       },
+      setSimulateAs: (simulateAs) => set({ simulateAs }),
+      replay: (call) => set((s) => ({ selectedId: call.fnId, tab: 'playground', prefill: { ...call, nonce: (s.prefill?.nonce ?? 0) + 1 } })),
+
       forget: (address, chainId) =>
         set((s) => ({ recents: s.recents.filter((r) => !(r.address.toLowerCase() === address.toLowerCase() && r.chainId === chainId)) })),
     }),
     {
       name: 'kendra:v1',
       storage: createJSONStorage(() => localStorage),
-      partialize: (s) => ({ ws: s.ws, recents: s.recents }),
+      partialize: (s) => ({ ws: s.ws, recents: s.recents, simulateAs: s.simulateAs }),
       // Restored after mount (see useRehydrate) so the first client render matches the server HTML
       skipHydration: true,
       onRehydrateStorage: () => (state) => {
